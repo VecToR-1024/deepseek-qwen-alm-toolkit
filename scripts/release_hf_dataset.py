@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from deepseek_distill.hf_dataset_release import (
+    RELEASE_PROFILES,
     audit_hf_package,
     package_hf_dataset,
     upload_hf_package,
@@ -30,6 +31,12 @@ def build_parser() -> argparse.ArgumentParser:
     package.add_argument("--records-per-shard", type=int, default=250)
     package.add_argument("--expected-records", type=int)
     package.add_argument("--expected-sha256")
+    package.add_argument(
+        "--trace-profile",
+        choices=RELEASE_PROFILES,
+        default="actual_only",
+        help="Publish only actual-token ALM traces or strict top-20 candidates.",
+    )
 
     audit = subparsers.add_parser(
         "audit", help="Revalidate shard hashes, trace reconstruction, and redactions."
@@ -73,6 +80,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             records_per_shard=args.records_per_shard,
             expected_records=args.expected_records,
             expected_sha256=args.expected_sha256,
+            trace_profile=args.trace_profile,
         )
         result = {
             "event": "hf_dataset_package_created",
@@ -80,6 +88,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "records": manifest["counts"]["records"],
             "repo_id": args.repo_id,
             "shards": manifest["counts"]["shards"],
+            "trace_profile": manifest["projection"]["trace_profile"],
         }
     elif args.command == "audit":
         audit = audit_hf_package(args.package_dir)

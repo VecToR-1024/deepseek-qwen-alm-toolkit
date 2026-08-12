@@ -150,8 +150,12 @@ python scripts/audit_training_data_contract.py --help
 ## Hugging Face 数据集发布
 
 `scripts/release_hf_dataset.py` 可从权威冻结 JSONL 构建确定性、默认私有的
-Hub 发布包。发布投影保留 ALM 所需的实际 token bytes/logprobs，并剥离
-benchmark 测试、本机路径、provider 标识、疑似凭据及不用的 top-20 候选。
+Hub 发布包。默认 `actual_only` 投影保留 ALM 所需的实际 token
+bytes/logprobs，并剥离 benchmark 测试、本机路径、provider 标识、疑似凭据及
+不用的 top-20 候选。显式 `--trace-profile strict_top20` 可另行发布严格基线
+所需的每位置 20 个候选 bytes/logprob 和可审计 tail-bucket mass；任何候选
+不足或字段无效的记录都会被拒绝。候选 token 字符串会一并保留，以兼容现有
+strict aligner；actual-token 字符串和 provider/raw 字段仍会剥离。
 上传默认只打印 dry-run，只有显式加入 `--execute` 才会写入 Hub。完整命令、
 2,041 条权威训练集身份和混合许可说明见
 [`docs/huggingface_dataset_release.md`](docs/huggingface_dataset_release.md)。

@@ -19,6 +19,12 @@ from .records import NORMALIZED_SCHEMA_VERSION
 
 
 HF_RELEASE_SCHEMA_VERSION = "offline_alm.hf_release.v1"
+ACTUAL_ONLY_RELEASE_PROFILE = "actual_only"
+STRICT_TOP20_RELEASE_PROFILE = "strict_top20"
+RELEASE_PROFILES = (
+    ACTUAL_ONLY_RELEASE_PROFILE,
+    STRICT_TOP20_RELEASE_PROFILE,
+)
 
 _SOURCE_FIELDS = (
     "dataset",
@@ -97,9 +103,14 @@ _LOCAL_PATH_PATTERNS = (
 )
 
 
-def project_record(record: Mapping[str, Any]) -> dict[str, Any]:
-    """Whitelist one normalized record into the exact ALM release contract."""
+def project_record(
+    record: Mapping[str, Any],
+    *,
+    trace_profile: str = ACTUAL_ONLY_RELEASE_PROFILE,
+) -> dict[str, Any]:
+    """Whitelist one normalized record into an audited trace release contract."""
 
+    _validate_trace_profile(trace_profile)
     if not isinstance(record, Mapping):
         raise ValueError("training record must be an object")
     if record.get("schema_version") != NORMALIZED_SCHEMA_VERSION:
@@ -112,6 +123,15 @@ def project_record(record: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError(f"{record_id}: response_text must be a string")
 
     request = _required_mapping(record.get("request"), f"{record_id}: request")
+    generation_config = request.get("generation_config")
+    if trace_profile == STRICT_TOP20_RELEASE_PROFILE:
+        generation_config = _required_mapping(
+            generation_config, f"{record_id}: request.generation_config"
+        )
+        if generation_config.get("top_logprobs") != 20:
+            raise ValueError(
+                f"{record_id}: strict_top20 requires generation_config.top_logprobs=20"
+            )
     messages = request.get("messages")
     if not isinstance(messages, list) or not messages:
         raise ValueError(f"{record_id}: request.messages must be a non-empty list")
@@ -168,9 +188,22 @@ def project_record(record: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError(
                 f"{record_id}: content_tokens[{position}].logprob is invalid"
             )
-        projected_tokens.append(
-            {"bytes": list(byte_values), "logprob": float(logprob)}
-        )
+        projected_token: dict[str, Any] = {
+            "bytes": list(byte_values),
+            "logprob": float(logprob),
+        }
+        if trace_profile == STRICT_TOP20_RELEASE_PROFILE:
+            candidates = _project_strict_top20_candidates(
+                row,
+                record_id=record_id,
+                position=position,
+            )
+            projected_token["top_logprobs"] = candidates
+            projected_token["top_probability_mass"] = min(
+                1.0,
+                math.fsum(math.exp(candidate["logprob"]) for candidate in candidates),
+            )
+        projected_tokens.append(projected_token)
 
     task = _required_mapping(record.get("task"), f"{record_id}: task")
     task_source = _required_mapping(
@@ -188,7 +221,6 @@ def project_record(record: Mapping[str, Any]) -> dict[str, Any]:
     projected_request: dict[str, Any] = {"messages": projected_messages}
     if isinstance(request.get("model"), str) and request["model"]:
         projected_request["model"] = request["model"]
-    generation_config = request.get("generation_config")
     if isinstance(generation_config, Mapping):
         projected_request["generation_config"] = _copy_fields(
             generation_config, _GENERATION_FIELDS
@@ -199,6 +231,7 @@ def project_record(record: Mapping[str, Any]) -> dict[str, Any]:
     projected: dict[str, Any] = {
         "schema_version": NORMALIZED_SCHEMA_VERSION,
         "id": record_id,
+        "release_profile": trace_profile,
         "request": projected_request,
         "response_text": response_text,
         "content_tokens": projected_tokens,
@@ -235,9 +268,11 @@ def package_hf_dataset(
     records_per_shard: int = 250,
     expected_records: int | None = None,
     expected_sha256: str | None = None,
+    trace_profile: str = ACTUAL_ONLY_RELEASE_PROFILE,
 ) -> dict[str, Any]:
     """Project and package a frozen JSONL without overwriting any output."""
 
+    _validate_trace_profile(trace_profile)
     source_path = Path(input_path)
     destination = Path(output_dir)
     if not source_path.is_file():
@@ -273,6 +308,7 @@ def package_hf_dataset(
         licenses: dict[str, set[str]] = defaultdict(set)
         source_counts: Counter[str] = Counter()
         redactions: Counter[str] = Counter()
+        trace_counts: Counter[str] = Counter()
         temporary_shards: list[Path] = []
         record_count = 0
         shard_handle: io.TextIOWrapper | None = None
@@ -294,7 +330,10 @@ def package_hf_dataset(
                         raise ValueError(
                             f"input line {line_number} is not valid JSON"
                         ) from error
-                    projected = project_record(original)
+                    projected = project_record(
+                        original,
+                        trace_profile=trace_profile,
+                    )
                     if record_count % records_per_shard == 0:
                         close_shard()
                         part_path = shard_dir / f"part-{len(temporary_shards):05d}.jsonl.gz"
@@ -311,6 +350,11 @@ def package_hf_dataset(
                         + "\n"
                     )
                     record_count += 1
+                    _accumulate_trace_counts(
+                        projected,
+                        trace_profile=trace_profile,
+                        counts=trace_counts,
+                    )
                     source = projected["task"]["source"]
                     dataset = str(source["dataset"])
                     source_counts[dataset] += 1
@@ -322,7 +366,7 @@ def package_hf_dataset(
                         )
                     if isinstance(original.get("task"), Mapping) and "tests" in original["task"]:
                         redactions["official_tests"] += 1
-                    if any(
+                    if trace_profile == ACTUAL_ONLY_RELEASE_PROFILE and any(
                         isinstance(row, Mapping) and row.get("top_logprobs")
                         for row in original.get("content_tokens", [])
                     ):
@@ -370,6 +414,13 @@ def package_hf_dataset(
             "projection": {
                 "policy": "allowlist_only",
                 "alm_semantics": "exact_actual_token_bytes_and_logprobs",
+                "trace_profile": trace_profile,
+                "strict_top20_candidates_retained": (
+                    trace_profile == STRICT_TOP20_RELEASE_PROFILE
+                ),
+                "tail_bucket_mass_reconstructable": (
+                    trace_profile == STRICT_TOP20_RELEASE_PROFILE
+                ),
                 "source_record_schema": NORMALIZED_SCHEMA_VERSION,
                 "published_record_schema": NORMALIZED_SCHEMA_VERSION,
             },
@@ -379,6 +430,13 @@ def package_hf_dataset(
                 "sha256": input_sha256,
             },
             "counts": {"records": record_count, "shards": shard_total},
+            "trace_counts": {
+                "actual_token_positions": trace_counts["actual_token_positions"],
+                "top_logprob_candidates": trace_counts["top_logprob_candidates"],
+                "positions_with_exact_top20": trace_counts[
+                    "positions_with_exact_top20"
+                ],
+            },
             "source_counts": dict(sorted(source_counts.items())),
             "source_licenses": {
                 dataset: sorted(values) for dataset, values in sorted(licenses.items())
@@ -524,6 +582,15 @@ def audit_hf_package(package_dir: str | Path) -> dict[str, Any]:
         "schema_version"
     ) != HF_RELEASE_SCHEMA_VERSION:
         raise ValueError("release_manifest.json has an unsupported schema")
+    projection = manifest.get("projection")
+    trace_profile = (
+        projection.get("trace_profile")
+        if isinstance(projection, Mapping)
+        else ACTUAL_ONLY_RELEASE_PROFILE
+    )
+    if trace_profile is None:
+        trace_profile = ACTUAL_ONLY_RELEASE_PROFILE
+    _validate_trace_profile(trace_profile)
     outputs = manifest.get("outputs")
     shard_rows = outputs.get("shards") if isinstance(outputs, Mapping) else None
     if not isinstance(shard_rows, list) or not shard_rows:
@@ -550,6 +617,7 @@ def audit_hf_package(package_dir: str | Path) -> dict[str, Any]:
     duplicate_ids = 0
     record_count = 0
     trace_records = 0
+    trace_counts: Counter[str] = Counter()
     for shard_index, shard_row in enumerate(shard_rows):
         if not isinstance(shard_row, Mapping):
             raise ValueError(f"shard metadata {shard_index} must be an object")
@@ -579,11 +647,24 @@ def audit_hf_package(package_dir: str | Path) -> dict[str, Any]:
                     raise ValueError(
                         f"{relative_path.as_posix()}:{line_number} must be an object"
                     )
-                _scan_forbidden_release_keys(record)
+                _scan_forbidden_release_keys(
+                    record,
+                    trace_profile=trace_profile,
+                )
                 _scan_safe_strings(
                     record, f"{relative_path.as_posix()}:{line_number}"
                 )
                 trace = provider.get_trace(record)
+                if record.get("release_profile", trace_profile) != trace_profile:
+                    raise ValueError(
+                        f"{relative_path.as_posix()}:{line_number} release_profile "
+                        "does not match the manifest"
+                    )
+                _accumulate_trace_counts(
+                    record,
+                    trace_profile=trace_profile,
+                    counts=trace_counts,
+                )
                 trace_records += 1
                 if trace.record_id in seen_ids:
                     duplicate_ids += 1
@@ -605,9 +686,25 @@ def audit_hf_package(package_dir: str | Path) -> dict[str, Any]:
         )
     if duplicate_ids:
         raise ValueError(f"release contains {duplicate_ids} duplicate record IDs")
+    audited_trace_counts = {
+        "actual_token_positions": trace_counts["actual_token_positions"],
+        "top_logprob_candidates": trace_counts["top_logprob_candidates"],
+        "positions_with_exact_top20": trace_counts[
+            "positions_with_exact_top20"
+        ],
+    }
+    manifest_trace_counts = manifest.get("trace_counts")
+    if isinstance(manifest_trace_counts, Mapping) and dict(
+        manifest_trace_counts
+    ) != audited_trace_counts:
+        raise ValueError(
+            "release trace counts differ from manifest: "
+            f"expected {dict(manifest_trace_counts)}, got {audited_trace_counts}"
+        )
     return {
         "schema_version": "offline_alm.hf_release_audit.v1",
         "package_manifest_sha256": _sha256(manifest_path),
+        "trace_profile": trace_profile,
         "counts": {
             "records": record_count,
             "unique_ids": len(seen_ids),
@@ -615,6 +712,7 @@ def audit_hf_package(package_dir: str | Path) -> dict[str, Any]:
             "shards": len(shard_rows),
         },
         "trace_reconstruction_records": trace_records,
+        "trace_counts": audited_trace_counts,
         "sensitive_scan": {
             "credential_like_values": 0,
             "forbidden_keys": 0,
@@ -637,13 +735,59 @@ def _render_dataset_card(manifest: Mapping[str, Any]) -> str:
     records = int(manifest["counts"]["records"])
     source_counts = manifest["source_counts"]
     source_licenses = manifest["source_licenses"]
+    projection = manifest.get("projection")
+    trace_profile = (
+        projection.get("trace_profile")
+        if isinstance(projection, Mapping)
+        else ACTUAL_ONLY_RELEASE_PROFILE
+    )
     source_rows = "\n".join(
         f"| {dataset} | {source_counts[dataset]} | "
         f"{', '.join(source_licenses[dataset])} |"
         for dataset in source_counts
     )
+    if trace_profile == STRICT_TOP20_RELEASE_PROFILE:
+        pretty_name = "DeepSeek to Qwen Strict Top-20 Traces"
+        heading = "DeepSeek to Qwen Strict Top-20 Traces"
+        trace_description = (
+            "the actual generated-token trace plus exactly 20 alternative-token "
+            "byte/logprob candidates at every generated position"
+        )
+        token_fields = (
+            "- `content_tokens[].bytes` and `content_tokens[].logprob`: the actual "
+            "teacher trajectory.\n"
+            "- `content_tokens[].top_logprobs`: exactly 20 candidate UTF-8 byte "
+            "sequences, token strings, and log probabilities per position.\n"
+            "- `content_tokens[].top_probability_mass`: probability mass recomputed "
+            "from the retained candidates; the complement defines the tail bucket."
+        )
+        exclusion_text = (
+            "Official tests are intentionally excluded. Reference solutions, verifier "
+            "output, local filesystem paths, provider response identifiers, system "
+            "fingerprints, and actual-token display strings are also excluded. The "
+            "strict top-20 trace supports the experimental top-20 + tail bucket "
+            "baseline; it does not expose the provider's full vocabulary distribution."
+        )
+    else:
+        pretty_name = "DeepSeek to Qwen Offline ALM Traces"
+        heading = "DeepSeek to Qwen Offline ALM Traces"
+        trace_description = (
+            "the actual generated-token UTF-8 bytes and log probabilities needed for "
+            "offline Approximate Likelihood Matching (ALM)"
+        )
+        token_fields = (
+            "- `content_tokens[].bytes` and `content_tokens[].logprob`: the exact "
+            "teacher trajectory consumed by the ALM implementation."
+        )
+        exclusion_text = (
+            "Official tests are intentionally excluded. Reference solutions, verifier "
+            "output, local filesystem paths, provider response identifiers, system "
+            "fingerprints, and top-k alternative-token distributions are also excluded. "
+            "The published trajectory still reconstructs "
+            "`response_text.encode(\"utf-8\")` exactly for every record."
+        )
     return f"""---
-pretty_name: DeepSeek to Qwen Offline ALM Traces
+pretty_name: {pretty_name}
 license: other
 task_categories:
 - text-generation
@@ -654,11 +798,10 @@ configs:
     path: data/{config_name}/*.jsonl.gz
 ---
 
-# DeepSeek to Qwen Offline ALM Traces
+# {heading}
 
 This private-first release contains {records} verified Python coding solutions with
-the actual generated-token UTF-8 bytes and log probabilities needed for offline
-Approximate Likelihood Matching (ALM).
+{trace_description}.
 
 ```python
 from datasets import load_dataset
@@ -671,15 +814,11 @@ train = load_dataset({repo_id!r}, {config_name!r}, split="train")
 - `request.messages`: the teacher prompts, with any local user paths replaced
   by `<LOCAL_PATH>`.
 - `response_text`: the unmodified accepted teacher completion.
-- `content_tokens[].bytes` and `content_tokens[].logprob`: the exact teacher
-  trajectory consumed by the ALM implementation.
+{token_fields}
 - `task.source`: provenance, pinned revision, split, and per-source license labels.
 - compact generation, sampling, and token-usage metadata where available.
 
-Official tests are intentionally excluded. Reference solutions, verifier output,
-local filesystem paths, provider response identifiers, system fingerprints, and
-top-k alternative-token distributions are also excluded. The published trajectory
-still reconstructs `response_text.encode("utf-8")` exactly for every record.
+{exclusion_text}
 
 ## Sources and licensing
 
@@ -696,6 +835,122 @@ visibility or redistributing the data.
 See `release_manifest.json` for the authoritative input SHA256, record counts,
 redaction counts, deterministic shard hashes, and source distribution.
 """
+
+
+def _validate_trace_profile(trace_profile: str) -> None:
+    if trace_profile not in RELEASE_PROFILES:
+        raise ValueError(
+            f"trace_profile must be one of {', '.join(RELEASE_PROFILES)}"
+        )
+
+
+def _project_strict_top20_candidates(
+    row: Mapping[str, Any],
+    *,
+    record_id: str,
+    position: int,
+) -> list[dict[str, Any]]:
+    candidates = row.get("top_logprobs")
+    if not isinstance(candidates, list) or len(candidates) != 20:
+        actual = len(candidates) if isinstance(candidates, list) else "missing"
+        raise ValueError(
+            f"{record_id}: content_tokens[{position}].top_logprobs must contain "
+            f"exactly 20 candidates, got {actual}"
+        )
+    projected: list[dict[str, Any]] = []
+    for candidate_position, candidate_value in enumerate(candidates):
+        candidate = _required_mapping(
+            candidate_value,
+            f"{record_id}: content_tokens[{position}].top_logprobs"
+            f"[{candidate_position}]",
+        )
+        byte_values = candidate.get("bytes")
+        if (
+            not isinstance(byte_values, list)
+            or not byte_values
+            or any(
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or not 0 <= value <= 255
+                for value in byte_values
+            )
+        ):
+            raise ValueError(
+                f"{record_id}: content_tokens[{position}].top_logprobs"
+                f"[{candidate_position}].bytes is invalid"
+            )
+        logprob = candidate.get("logprob")
+        if (
+            isinstance(logprob, bool)
+            or not isinstance(logprob, (int, float))
+            or not math.isfinite(float(logprob))
+            or float(logprob) > 1e-7
+        ):
+            raise ValueError(
+                f"{record_id}: content_tokens[{position}].top_logprobs"
+                f"[{candidate_position}].logprob is invalid"
+            )
+        token = _required_string(
+            candidate.get("token"),
+            f"{record_id}: content_tokens[{position}].top_logprobs"
+            f"[{candidate_position}].token",
+        )
+        projected.append(
+            {
+                "token": token,
+                "bytes": list(byte_values),
+                "logprob": float(logprob),
+            }
+        )
+    return projected
+
+
+def _accumulate_trace_counts(
+    record: Mapping[str, Any],
+    *,
+    trace_profile: str,
+    counts: Counter[str],
+) -> None:
+    content_tokens = record.get("content_tokens")
+    if not isinstance(content_tokens, list) or not content_tokens:
+        raise ValueError("published content_tokens must be a non-empty list")
+    for position, row_value in enumerate(content_tokens):
+        row = _required_mapping(row_value, f"content_tokens[{position}]")
+        counts["actual_token_positions"] += 1
+        candidates = row.get("top_logprobs")
+        if trace_profile == STRICT_TOP20_RELEASE_PROFILE:
+            projected_candidates = _project_strict_top20_candidates(
+                row,
+                record_id=str(record.get("id", "record")),
+                position=position,
+            )
+            counts["top_logprob_candidates"] += len(projected_candidates)
+            counts["positions_with_exact_top20"] += 1
+            expected_mass = min(
+                1.0,
+                math.fsum(
+                    math.exp(candidate["logprob"])
+                    for candidate in projected_candidates
+                ),
+            )
+            stored_mass = row.get("top_probability_mass")
+            if (
+                isinstance(stored_mass, bool)
+                or not isinstance(stored_mass, (int, float))
+                or not math.isfinite(float(stored_mass))
+                or not math.isclose(
+                    float(stored_mass), expected_mass, rel_tol=1e-12, abs_tol=1e-15
+                )
+            ):
+                raise ValueError(
+                    f"{record.get('id', 'record')}: content_tokens[{position}] "
+                    "top_probability_mass does not match candidate logprobs"
+                )
+        elif candidates is not None:
+            raise ValueError(
+                f"{record.get('id', 'record')}: actual_only release contains "
+                f"top_logprobs at content_tokens[{position}]"
+            )
 
 
 def _required_mapping(value: Any, label: str) -> Mapping[str, Any]:
@@ -731,7 +986,12 @@ def _scan_safe_strings(value: Any, path: str = "record") -> None:
         raise ValueError(f"{path} contains a local filesystem path")
 
 
-def _scan_forbidden_release_keys(value: Any, path: str = "record") -> None:
+def _scan_forbidden_release_keys(
+    value: Any,
+    path: str = "record",
+    *,
+    trace_profile: str = ACTUAL_ONLY_RELEASE_PROFILE,
+) -> None:
     if isinstance(value, Mapping):
         for key, child in value.items():
             normalized = str(key).lower()
@@ -739,13 +999,41 @@ def _scan_forbidden_release_keys(value: Any, path: str = "record") -> None:
                 normalized == "top_logprobs"
                 and path == "record.request.generation_config"
             )
-            if normalized in _FORBIDDEN_RELEASE_KEYS and not generation_parameter:
+            strict_trace_field = (
+                trace_profile == STRICT_TOP20_RELEASE_PROFILE
+                and normalized in {"top_logprobs", "top_probability_mass"}
+                and re.fullmatch(r"record\.content_tokens\[\d+\]", path)
+                is not None
+            )
+            strict_candidate_token = (
+                trace_profile == STRICT_TOP20_RELEASE_PROFILE
+                and normalized == "token"
+                and re.fullmatch(
+                    r"record\.content_tokens\[\d+\]\.top_logprobs\[\d+\]",
+                    path,
+                )
+                is not None
+            )
+            if (
+                normalized in _FORBIDDEN_RELEASE_KEYS
+                and not generation_parameter
+                and not strict_trace_field
+                and not strict_candidate_token
+            ):
                 raise ValueError(f"{path}.{key} is a forbidden release field")
-            _scan_forbidden_release_keys(child, f"{path}.{key}")
+            _scan_forbidden_release_keys(
+                child,
+                f"{path}.{key}",
+                trace_profile=trace_profile,
+            )
         return
     if isinstance(value, list):
         for index, child in enumerate(value):
-            _scan_forbidden_release_keys(child, f"{path}[{index}]")
+            _scan_forbidden_release_keys(
+                child,
+                f"{path}[{index}]",
+                trace_profile=trace_profile,
+            )
 
 
 def _redact_local_paths(value: str) -> tuple[str, int]:

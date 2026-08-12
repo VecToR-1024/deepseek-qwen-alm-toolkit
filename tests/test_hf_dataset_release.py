@@ -3,6 +3,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -86,6 +87,21 @@ def _record(record_id: str = "apps_1__attempt_1") -> dict:
     }
 
 
+def _strict_top20_record(record_id: str = "apps_1__attempt_1") -> dict:
+    record = _record(record_id)
+    candidates = [
+        {
+            "token": f"private-candidate-{index}",
+            "bytes": [65 + index],
+            "logprob": -4.0 - index / 10,
+        }
+        for index in range(20)
+    ]
+    record["content_tokens"][0]["top_logprobs"] = candidates
+    record["content_tokens"][0]["top_probability_mass"] = 0.123
+    return record
+
+
 def _write_jsonl(path: Path, records: list[dict]) -> None:
     path.write_text(
         "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in records),
@@ -133,6 +149,52 @@ def test_project_record_keeps_exact_alm_trace_without_private_tests() -> None:
         "reference_solution",
     ):
         assert forbidden not in serialized
+
+
+def test_project_record_strict_top20_keeps_complete_candidates_without_actual_token() -> None:
+    record = _strict_top20_record()
+
+    projected = project_record(record, trace_profile="strict_top20")
+
+    token = projected["content_tokens"][0]
+    assert token["top_logprobs"] == [
+        {
+            "token": f"private-candidate-{index}",
+            "bytes": [65 + index],
+            "logprob": -4.0 - index / 10,
+        }
+        for index in range(20)
+    ]
+    assert token["top_probability_mass"] == pytest.approx(
+        sum(math.exp(-4.0 - index / 10) for index in range(20))
+    )
+    assert "token" not in token
+    assert all("token" in candidate for candidate in token["top_logprobs"])
+    assert projected["release_profile"] == "strict_top20"
+
+
+def test_project_record_strict_top20_rejects_incomplete_or_invalid_candidates() -> None:
+    incomplete = _strict_top20_record()
+    incomplete["content_tokens"][0]["top_logprobs"].pop()
+    with pytest.raises(ValueError, match="exactly 20"):
+        project_record(incomplete, trace_profile="strict_top20")
+
+    invalid = _strict_top20_record()
+    invalid["content_tokens"][0]["top_logprobs"][3]["bytes"] = []
+    with pytest.raises(ValueError, match=r"top_logprobs\[3\]\.bytes is invalid"):
+        project_record(invalid, trace_profile="strict_top20")
+
+    secret = _strict_top20_record()
+    secret["content_tokens"][0]["top_logprobs"][4]["token"] = (
+        "hf_" + "abcdefghijklmnop"
+    )
+    with pytest.raises(ValueError, match="credential-like value"):
+        project_record(secret, trace_profile="strict_top20")
+
+
+def test_project_record_rejects_unknown_release_profile() -> None:
+    with pytest.raises(ValueError, match="trace_profile"):
+        project_record(_record(), trace_profile="invented")
 
 
 def test_project_record_rejects_a_secret_in_a_teacher_prompt() -> None:
@@ -289,6 +351,40 @@ def test_release_audit_revalidates_hashes_trace_and_sensitive_fields(
         audit_hf_package(package_dir)
 
 
+def test_strict_top20_package_manifest_and_audit_count_every_candidate(
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "training_records.jsonl"
+    _write_jsonl(
+        input_path,
+        [_strict_top20_record("first"), _strict_top20_record("second")],
+    )
+    package_dir = tmp_path / "release"
+
+    manifest = package_hf_dataset(
+        input_path=input_path,
+        output_dir=package_dir,
+        config_name="strict_top20_2",
+        repo_id="owner/strict-top20",
+        trace_profile="strict_top20",
+        records_per_shard=1,
+    )
+    audit = audit_hf_package(package_dir)
+
+    assert manifest["projection"]["trace_profile"] == "strict_top20"
+    assert manifest["projection"]["strict_top20_candidates_retained"] is True
+    assert manifest["trace_counts"] == {
+        "actual_token_positions": 2,
+        "top_logprob_candidates": 40,
+        "positions_with_exact_top20": 2,
+    }
+    assert audit["trace_profile"] == "strict_top20"
+    assert audit["trace_counts"] == manifest["trace_counts"]
+    card = (package_dir / "README.md").read_text(encoding="utf-8")
+    assert "Strict Top-20" in card
+    assert "tail bucket" in card
+
+
 class _FakeHfApi:
     def __init__(self) -> None:
         self.created: list[dict] = []
@@ -428,6 +524,32 @@ def test_release_cli_packages_data_and_upload_is_dry_run_by_default(
         "repo_id": "owner/repo",
         "visibility": "private",
     }
+
+
+def test_release_cli_forwards_strict_top20_profile(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    input_path = tmp_path / "training_records.jsonl"
+    output_dir = tmp_path / "release"
+    _write_jsonl(input_path, [_strict_top20_record()])
+
+    assert release_hf_dataset.main(
+        [
+            "package",
+            "--input",
+            str(input_path),
+            "--output-dir",
+            str(output_dir),
+            "--config-name",
+            "strict_top20_1",
+            "--repo-id",
+            "owner/strict-top20",
+            "--trace-profile",
+            "strict_top20",
+        ]
+    ) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["trace_profile"] == "strict_top20"
 
 
 def test_upload_requires_human_confirmation_of_the_exact_manifest(
