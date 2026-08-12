@@ -192,6 +192,15 @@ def test_project_record_strict_top20_rejects_incomplete_or_invalid_candidates() 
         project_record(secret, trace_profile="strict_top20")
 
 
+def test_project_record_strict_top20_allows_empty_candidate_display_token() -> None:
+    record = _strict_top20_record()
+    record["content_tokens"][0]["top_logprobs"][13]["token"] = ""
+
+    projected = project_record(record, trace_profile="strict_top20")
+
+    assert projected["content_tokens"][0]["top_logprobs"][13]["token"] == ""
+
+
 def test_project_record_rejects_unknown_release_profile() -> None:
     with pytest.raises(ValueError, match="trace_profile"):
         project_record(_record(), trace_profile="invented")

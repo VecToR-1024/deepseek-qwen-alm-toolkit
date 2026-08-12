@@ -890,11 +890,12 @@ def _project_strict_top20_candidates(
                 f"{record_id}: content_tokens[{position}].top_logprobs"
                 f"[{candidate_position}].logprob is invalid"
             )
-        token = _required_string(
-            candidate.get("token"),
-            f"{record_id}: content_tokens[{position}].top_logprobs"
-            f"[{candidate_position}].token",
-        )
+        token = candidate.get("token")
+        if not isinstance(token, str):
+            raise ValueError(
+                f"{record_id}: content_tokens[{position}].top_logprobs"
+                f"[{candidate_position}].token must be a string"
+            )
         projected.append(
             {
                 "token": token,
