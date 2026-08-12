@@ -1,0 +1,146 @@
+{
+  "schema_version": "offline_alm.full_benchmark.manifest.v1",
+  "run_id": "merged_v3_lora_655_full_v1_20260729",
+  "created_at": "2026-07-29T11:34:39.0038070+08:00",
+  "purpose": "Full frozen benchmark evaluation of epoch 5 and epoch 3 checkpoints from the 655-example controlled SFT versus SFT+ALM run.",
+  "run_root": "${AUTODL_ROOT}/benchmarks/merged_v3_lora_655_full_v1_20260729",
+  "training": {
+    "run_id": "merged_v3_lora_655_v1_20260729",
+    "run_root": "${AUTODL_ROOT}/experiments/merged_v3_lora_655_v1_20260729",
+    "audit_status": "passed",
+    "audit_sha256": "80f26e7d557b2b36a8e86d88258ce43c51e6e63299adc189fe2515490090a5fe",
+    "data_records": 655,
+    "data_sha256": "3e1dcd22e24f5b07d210d678ebeb726312d15bbdb42c6efed659f3346a5e33a5",
+    "code_commit": "52514620a63095b10729fcd98242b571ef2d8b79"
+  },
+  "candidate_order": [
+    "sft_only_epoch5",
+    "sft_alm_epoch5",
+    "sft_only_epoch3",
+    "sft_alm_epoch3"
+  ],
+  "candidates": {
+    "sft_only_epoch5": {
+      "arm": "sft_only",
+      "epoch": 5,
+      "step": 410,
+      "adapter": "${AUTODL_ROOT}/experiments/merged_v3_lora_655_v1_20260729/outputs/sft_only/checkpoint-410",
+      "adapter_sha256": "f9752af64891bb867f9acbaa4b18db9289ddbd10c0f0d6b40cd349ba69f7aa60"
+    },
+    "sft_alm_epoch5": {
+      "arm": "sft_alm",
+      "epoch": 5,
+      "step": 410,
+      "adapter": "${AUTODL_ROOT}/experiments/merged_v3_lora_655_v1_20260729/outputs/sft_alm/checkpoint-410",
+      "adapter_sha256": "73461e6494ecf55554591b688722688eb8182391447b46f522e3b420bdd27cb0"
+    },
+    "sft_only_epoch3": {
+      "arm": "sft_only",
+      "epoch": 3,
+      "step": 246,
+      "adapter": "${AUTODL_ROOT}/experiments/merged_v3_lora_655_v1_20260729/outputs/sft_only/checkpoint-246",
+      "adapter_sha256": "ac56afe80ce8d3b92c14c9fc772a2804c2a383d59dbce3b1f1132501986f821f"
+    },
+    "sft_alm_epoch3": {
+      "arm": "sft_alm",
+      "epoch": 3,
+      "step": 246,
+      "adapter": "${AUTODL_ROOT}/experiments/merged_v3_lora_655_v1_20260729/outputs/sft_alm/checkpoint-246",
+      "adapter_sha256": "41bc1930f26d08e663de9e4bbb838a11310c6a6c5b1bb67510f5a4cc8ec012c7"
+    }
+  },
+  "student": {
+    "base_model": "Qwen/Qwen2.5-Coder-7B-Instruct",
+    "base_revision": "c03e6d358207e414f1eca0bb1891e29f1db0e242",
+    "dtype": "bfloat16",
+    "quantization": false
+  },
+  "evalplus": {
+    "source_commit": "26d6d00bb1fd0fa37f39c99d5290da67891d1c5e",
+    "version": "0.4.0.dev44",
+    "datasets": {
+      "humaneval_plus": {
+        "version": "v0.1.10",
+        "tasks": 164
+      },
+      "mbpp_plus": {
+        "version": "v0.2.0",
+        "tasks": 378,
+        "primary_heldout_tasks": 320,
+        "heldout_manifest_sha256": "a06e7703647b18f82ba49fa5cc40399cdbc8913c9850972d55be1d37b25def3e",
+        "heldout_ordered_ids_sha256": "4d808fc68d1b6f3278c7e44c8833c85ebf94e19c8a5289aaac83fd53d24b5199",
+        "training_overlap_note": "The merged dataset's first 200 records exactly match the original MBPP training candidates and the remaining 455 records are TACO, so the pre-training 320-task held-out set is unchanged."
+      }
+    },
+    "generation": {
+      "temperature": 0.0,
+      "greedy": true,
+      "batch_size": 1,
+      "n": 1,
+      "max_new_tokens": 768,
+      "dtype": "bfloat16",
+      "attention": "eager",
+      "device_map": "auto",
+      "prompt_and_sanitize": "official EvalPlus implementation"
+    },
+    "scoring": {
+      "parallel_workers": 10,
+      "base_only": false,
+      "test_details": false,
+      "min_time_limit": 4.0,
+      "gt_time_limit_factor": 4.0,
+      "runner_user": "evalplus-runner",
+      "network_filter": "libseccomp deny socket domain != AF_UNIX",
+      "seccomp_runner_sha256": "70753d3ae226abc6efe33f9068ba9b1dfdacfe0b85d722c1d56fd792f33cef53"
+    }
+  },
+  "livecodebench": {
+    "source_commit": "28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24",
+    "dataset": "livecodebench/code_generation_lite",
+    "dataset_revision": "0fe84c3912ea0c4d4a78037083943e8f0c4dd505",
+    "release": "release_v6",
+    "date_range_inclusive": [
+      "2024-10-01",
+      "2025-04-30"
+    ],
+    "tasks": 339,
+    "selected_dataset_sha256": "d7b9d4fb14931533c9b0f0be0577c27a912d4512e65b072899364a450ab5b751",
+    "selection_manifest_sha256": "15eb43fcceb5b01b23b8989185a68f81f8c4a4c1d56078b8e87859cb6c785605",
+    "generation_runner_sha256": "dbb73d109c2e426f7ff9e6b745ed3873a6bf80eb2bd008a0113541b10c97aceb",
+    "evaluation_runner_sha256": "091360d84cc9d596d078d040482ebac317f25ac74516407312d795601d5a4542",
+    "generation": {
+      "temperature": 0.0,
+      "top_p": 1.0,
+      "greedy": true,
+      "batch_size": 4,
+      "n": 1,
+      "max_new_tokens": 2000,
+      "dtype": "bfloat16",
+      "attention": "eager",
+      "prompt_and_extraction": "official LiveCodeBench Qwen implementation"
+    },
+    "scoring": {
+      "workers": 10,
+      "timeout_seconds": 6,
+      "runner_user": "evalplus-runner",
+      "network_filter": "libseccomp deny socket domain != AF_UNIX"
+    }
+  },
+  "baseline_reports": {
+    "evalplus": {
+      "path": "${AUTODL_ROOT}/benchmarks/qwen25coder7b_evalplus_v1/baseline_report.json",
+      "sha256": "62978a0687b006d571c7407e2860aae2d45a2669ec2a751fd67226d54467ce2d"
+    },
+    "livecodebench": {
+      "path": "${AUTODL_ROOT}/benchmarks/qwen25coder7b_livecodebench_v1/baseline_report.json",
+      "sha256": "3fc0c2ff420d10344eb41e6d4e4f39b73bcb285431fdb893db782a8a3f643557"
+    }
+  },
+  "selection_contract": {
+    "primary_checkpoint": "epoch 5",
+    "diagnostic_checkpoint": "epoch 3",
+    "post_hoc_checkpoint_selection": false,
+    "post_hoc_task_selection": false,
+    "automatic_training": false
+  }
+}

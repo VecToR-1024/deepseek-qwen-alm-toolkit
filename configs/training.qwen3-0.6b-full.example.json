@@ -1,0 +1,33 @@
+{
+  "schema_version": "offline_alm.training_template.v1",
+  "name": "qwen3_0_6b_full_sft_alm",
+  "entrypoint": "examples/train_offline_alm.py",
+  "training_mode": "bf16_full",
+  "validation_status": "data_contract_only",
+  "notes": "The tokenizer/data contract was validated locally. Run a GPU smoke test before treating these optimization settings as proven.",
+  "environment": {
+    "STUDENT_MODEL": "Qwen/Qwen3-0.6B",
+    "MODEL_REVISION": "c1899de289a04d12100db370d81485cdf75e47ca",
+    "CHAT_TEMPLATE_KWARGS": "{\"enable_thinking\": false}",
+    "MAX_LENGTH": "4096",
+    "USE_LORA": "0",
+    "ALPHA_ALM": "10.0",
+    "ALM_TEMPERATURE": "100.0",
+    "ALM_EPSILON": "1e-6",
+    "LEARNING_RATE": "2e-5",
+    "EPOCHS": "1",
+    "BATCH_SIZE": "4",
+    "GRAD_ACCUM": "4",
+    "LR_SCHEDULER_TYPE": "linear",
+    "WARMUP_RATIO": "0.03",
+    "MAX_GRAD_NORM": "1.0",
+    "GRADIENT_CHECKPOINTING": "1",
+    "SEED": "20260812",
+    "DATA_SEED": "20260812",
+    "LOGGING_STEPS": "1",
+    "LOGGING_FIRST_STEP": "1",
+    "SAVE_STRATEGY": "epoch",
+    "SAVE_TOTAL_LIMIT": "2",
+    "RESUME_FROM_CHECKPOINT": "0"
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "schema_version": "offline_alm.qwen25_instruct_phase.v1",
+  "run_id": "qwen25_7b_instruct_hard_combined_alpha10_v1_20260804",
+  "created_at": "2026-08-04T17:20:00+08:00",
+  "model": {
+    "repo_id": "Qwen/Qwen2.5-7B-Instruct",
+    "revision": "a09a35458c702b33eeacc393d103063234e8bc28"
+  },
+  "dataset": {
+    "path": "${AUTODL_ROOT}/data/multisource_hard_combined_v1_20260804/frozen_all/training_records.jsonl",
+    "records": 2041,
+    "sha256": "64b28fd6d6b090055684c7470da0bd6e6591d52dd72b8651e54c280b6b3b830f"
+  },
+  "training": {
+    "objective": "hard_sft_loss + 10.0 * alm_loss",
+    "alpha_alm": 10.0,
+    "epochs": 1,
+    "learning_rate": 0.0001,
+    "micro_batch_size": 1,
+    "gradient_accumulation": 8,
+    "max_length": 4096,
+    "seed": 20260727,
+    "data_seed": 20260727,
+    "adapter": "BF16 LoRA",
+    "quantized": false,
+    "resume_from_checkpoint": null
+  },
+  "gates": [
+    "model_snapshot",
+    "base_benchmark_smoke",
+    "dataset_preflight",
+    "one_step_gpu_smoke",
+    "one_epoch_training"
+  ],
+  "reuse": {
+    "offline_teacher_traces": true,
+    "student_input_ids": false,
+    "student_labels": false,
+    "alm_chunks": false,
+    "coder_adapter": false
+  },
+  "automatic_full_benchmark": false,
+  "automatic_shutdown": false
+}
