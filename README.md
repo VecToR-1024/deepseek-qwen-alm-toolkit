@@ -1,37 +1,96 @@
+<div align="center">
+
 # DeepSeek → Qwen Offline ALM Toolkit
 
-这是一套从研究项目中拆出的、可独立安装和测试的代码蒸馏工具链。它把公开编程题送给 DeepSeek API，持久化实际生成 token 的 bytes/logprob，在隔离进程中运行官方测试，再用同一 completion 对 Qwen 做 teacher forcing，通过字节端点对齐实现 Approximate Likelihood Matching（ALM）。
+**Verified coding data. Exact token traces. Auditable distillation.**
 
-主目标保持为：
+Build durable DeepSeek teacher datasets from public coding benchmarks, verify every
+solution in isolation, and train Qwen students with byte-aligned Approximate
+Likelihood Matching (ALM).
+
+[English](README.md) · [简体中文](README.zh-CN.md)
+
+[![Python 3.11–3.12](https://img.shields.io/badge/Python-3.11--3.12-3776AB?logo=python&logoColor=white)](pyproject.toml)
+[![License: MIT](https://img.shields.io/badge/Code%20License-MIT-2ea44f)](LICENSE)
+[![Primary objective: SFT + ALM](https://img.shields.io/badge/Objective-SFT%20%2B%20ALM-7c3aed)](docs/alm_implementation.md)
+[![Offline tests](https://img.shields.io/badge/Tests-Offline%20%26%20Fake--API-0f766e)](tests)
+
+</div>
+
+---
+
+## What it does
+
+This toolkit turns benchmark tasks into training-ready offline distillation records:
+
+1. import pinned tasks from established coding datasets;
+2. collect DeepSeek completions with actual-token bytes and log probabilities;
+3. preserve raw and normalized attempts in append-only, resumable queues;
+4. compile, import, and run official tests in isolated child processes;
+5. freeze only trace-valid, format-valid, test-passing candidates;
+6. train Qwen with hard SFT plus cross-tokenizer ALM.
+
+The primary training objective is:
 
 ```text
 total_loss = hard_sft_loss + alpha_alm * alm_loss
 ```
 
-仓库不包含 API key、原始 trace、训练数据、模型、LoRA adapter、checkpoint 或历史日志。`proven_assets/` 只保存已经跑通过的启动器快照，便于复用旧轮子；其中的旧云端绝对路径是历史运行契约，不是通用配置。
+The repository contains no API keys, datasets, raw traces, models, adapters,
+checkpoints, or experiment logs. It is a reusable research toolkit, not a hosted
+service or a prepackaged model release.
 
-## 当前能力
+## Why this toolkit
 
-- 数据导入：MBPP、APPS、CodeContests、TACO multi-shard、Open-R1 Codeforces、ODEX、xCodeEval。
-- 教师采集：DeepSeek OpenAI-compatible chat API，支持 `actual_only` 和旧的 `top20` trace。
-- 48-worker 流水线：32 API workers + durable raw single writer + streaming normalizer + bounded queue + 16 isolated verifier workers + verifier single writer。
-- 可靠性：append-only JSONL、fsync、断点恢复、任务/attempt 去重、错误记录、磁盘水位保护、优雅停止。
-- 验证：源码提取、AST、接口、禁用操作、compile/import/test 分阶段隔离执行。
-- 数据冻结：通过率、格式、trace、近重复、ALM dry-run、EOS/label 和 benchmark overlap 审计。
-- 蒸馏：OfflineTeacherTraceProvider、O(T+S) 字节端点 ALM、稳定 forward-KL、严格 top-20 基线。
-- 训练：同一 Transformers/TRL 入口支持 BF16 LoRA 与 BF16 全参训练，支持 SFT-only 和 SFT+ALM 对照。
-- Benchmark：保留已跑通的 EvalPlus / LiveCodeBench 资产及监控脚本作为可追溯参考。
+| Capability | What you get |
+| --- | --- |
+| Durable collection | Append-only JSONL, single-writer persistence, `fsync`, resume, attempt deduplication, durable errors, disk-watermark protection, and graceful stop. |
+| Verified code data | Conservative source extraction, AST/interface checks, forbidden-operation checks, and separate compile/import/test phases. |
+| Cross-tokenizer KD | O(T + S) byte-endpoint chunk alignment without requiring teacher and student token IDs to match. |
+| Offline teacher traces | Training never needs a locally loaded teacher model; DeepSeek API traces are consumed through `OfflineTeacherTraceProvider`. |
+| Comparable experiments | One Transformers/TRL entrypoint supports SFT-only and SFT+ALM, BF16 LoRA and BF16 full fine-tuning. |
+| Auditable releases | Deterministic Hugging Face shards, allowlisted fields, manifest hashes, sensitive-data scans, and human-confirmed upload. |
 
-## 2026-08-12 当前状态
+## Pipeline
 
-- 48-worker `actual_only` 采集/验证链路属于已跑通资产。
-- 最新 4,500 次采集得到 1,656 条 clean ALM 候选、按题面精确去重后 1,619 条；数据文件不进入本仓库，验收摘要见 `docs/data_acceptance_qwen3_0_6b_20260811.md`。
-- `Qwen/Qwen3-0.6B` revision `c1899de289a04d12100db370d81485cdf75e47ca` 的非思考模板数据契约已验证：1,656/1,656 EOS supervised，ALM error、zero chunk、boundary drop 和 over-4096 均为 0。
-- Qwen3 全参 BF16 启动器是新整理的候选资产，尚未完成 GPU smoke，因此不得与 `proven_assets/` 中已经实际跑通的 Qwen2.5 LoRA 启动器混为一谈。
+```mermaid
+flowchart LR
+    A["Pinned benchmark tasks"] --> B["DeepSeek API<br/>32 workers"]
+    B --> C["Raw queue<br/>append-only single writer"]
+    C --> D["Normalize + reconstruct bytes"]
+    D --> E["Bounded verification queue"]
+    E --> F["Isolated verifier<br/>16 workers"]
+    F --> G["Accepted / rejected / audit"]
+    G --> H["Frozen dataset"]
+    H --> I["Qwen SFT + ALM"]
+```
 
-## 快速安装
+Official tests never enter the teacher prompt. Failed attempts remain available for
+audit. If a completion is cleaned or rewritten, its old bytes/logprobs are no longer
+authoritative and cannot be used for ALM.
 
-推荐 Python 3.12：
+## Supported surfaces
+
+### Data sources
+
+MBPP, APPS, CodeContests, TACO multi-shard, Open-R1 Codeforces, ODEX, and
+xCodeEval importers are included. Each importer preserves source identity,
+revision/split metadata, and tests separately from the teacher prompt.
+
+### Trace profiles
+
+| Profile | Published trace | Intended use |
+| --- | --- | --- |
+| `actual_only` | Completion text plus actual-token bytes/logprob | Primary ALM path; compact and recommended for large collection runs. |
+| `strict_top20` | Actual trace plus exactly 20 candidate token/bytes/logprob rows per position and auditable tail mass | Optional strict top-20 + tail-bucket baseline; substantially larger. |
+
+ALM is the primary objective. The strict top-20 path remains an experimental
+baseline; this project does not substitute GOLD's ULD objective without proving
+mathematical equivalence.
+
+## Quick start
+
+Python 3.12 is recommended. Python 3.11 is also supported.
 
 ```powershell
 conda create -n deepseek-qwen-alm python=3.12 -y
@@ -40,11 +99,17 @@ python -m pip install -e ".[collect,archive,data,train,test]"
 python -m pytest -q --basetemp=.pytest-tmp
 ```
 
-仅做本地收集/验证时不需要 CUDA。训练环境的 PyTorch/CUDA 应按目标 GPU 镜像安装；不要因为驱动显示 CUDA 13.x 就强行安装同版本 toolkit，PyTorch wheel 自带的 CUDA runtime 与足够新的驱动兼容即可。
+Collection and verification do not require CUDA. For training, install the PyTorch
+build appropriate for the target GPU image. A recent NVIDIA driver can run PyTorch
+wheels that bundle an older CUDA runtime; the driver-reported CUDA version does not
+need to match the wheel exactly.
 
-## 先检查 48-worker 命令
+## Run the 48-worker collector
 
-示例配置位于 `configs/collection.actual-only.48workers.example.json`。它默认用单个 TACO lane 吃满 32+16 worker，`actual_only` 不请求 top-20：
+The reference topology is 32 API workers feeding a durable raw single writer,
+followed by streaming normalization and 16 isolated verifier workers.
+
+Preview the full command graph first:
 
 ```powershell
 python scripts/run_hard_collection_campaign.py `
@@ -54,133 +119,131 @@ python scripts/run_hard_collection_campaign.py `
   --dry-run
 ```
 
-实际开始前，复制配置并修改 `campaign_id`、`run_root`、数据源、limit、seed 和排除列表；不要直接复用示例 run ID。
+Copy the example config and set a new `campaign_id`, `run_root`, source, limit,
+seed, and exclusion list. Do not reuse the example run ID.
 
 ```powershell
-$env:DEEPSEEK_API_KEY = "..."
+$env:DEEPSEEK_API_KEY = "<your-key>"
 powershell -ExecutionPolicy Bypass -File examples/collection_48workers/start_local.ps1 `
   -Config configs/my_campaign.json
 ```
 
-监控和优雅停止：
+Monitor or stop gracefully:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File examples/collection_48workers/monitor_local.ps1 `
   -Config configs/my_campaign.json
+
 powershell -ExecutionPolicy Bypass -File examples/collection_48workers/stop_local.ps1 `
   -Config configs/my_campaign.json
 ```
 
-停止只写入 `STOP` 并终止子进程树，已经 fsync 的 raw/normalized/verifier 队列会保留。再次启动同一冻结配置会跳过已完成 ID。
+Graceful stop writes `STOP`, terminates the child process tree, and preserves every
+already-synced raw, normalized, and verifier record. Restarting the same frozen
+configuration skips completed IDs.
 
-## 数据流
+## Train a student
 
-```text
-pinned benchmark tasks
-        ↓
-DeepSeek API workers (32)
-        ↓
-raw_attempts.jsonl ── single writer / append-only
-        ↓
-streaming normalization + byte reconstruction
-        ↓
-bounded verification queue
-        ↓
-isolated verifier workers (16)
-        ↓
-verifier_attempts.jsonl ── single writer / append-only
-        ↓
-accepted_alm / accepted_sft_only / rejected / audit / frozen dataset
-```
+The authoritative entrypoint is [`examples/train_offline_alm.py`](examples/train_offline_alm.py).
+It teacher-forces Qwen on the same completion and applies byte-aligned ALM chunks.
 
-官方测试永远不进入 teacher prompt。所有失败尝试都保留，主 ALM 数据只接受原始教师回答本身已满足格式、trace 和官方测试契约的样本。清洗过文本不能继续沿用原始 token bytes/logprob。
+| Template | Mode | Objective |
+| --- | --- | --- |
+| [`training.sft-only.example.json`](configs/training.sft-only.example.json) | BF16 LoRA | `ALPHA_ALM=0.0` |
+| [`training.sft-alm.example.json`](configs/training.sft-alm.example.json) | BF16 LoRA | `ALPHA_ALM=10.0` |
+| [`training.qwen3-0.6b-full.example.json`](configs/training.qwen3-0.6b-full.example.json) | BF16 full fine-tuning | SFT-only and SFT+ALM pair; thinking disabled |
 
-## 训练
-
-权威入口是 `examples/train_offline_alm.py`。它不会 4-bit 量化基础模型，因此这里没有把 BF16 LoRA 错称为 QLoRA。已有两个 Qwen2.5 LoRA 对照模板：
-
-- `configs/training.sft-only.example.json`：`ALPHA_ALM=0.0`
-- `configs/training.sft-alm.example.json`：`ALPHA_ALM=10.0`
-
-另有一个 Qwen3-0.6B 全参候选模板：
-
-- `configs/training.qwen3-0.6b-full.example.json`：`USE_LORA=0`，并把 `{"enable_thinking": false}` 同时传给 prompt 与 completion 的 chat template。
-
-Linux GPU 上可用同一个启动器依次跑两臂：
+The LoRA templates do not 4-bit quantize the base model and are therefore not
+mislabelled as QLoRA.
 
 ```bash
 export TRAIN_DATASET=/path/to/frozen/training_records.jsonl
 export STUDENT_MODEL=/path/to/pinned/qwen/snapshot
 export OUTPUT_ROOT=/path/to/experiment
+
 nohup bash examples/training/launch_pair.sh > "$OUTPUT_ROOT/launcher.log" 2>&1 &
 bash examples/training/monitor_training.sh "$OUTPUT_ROOT"
 ```
 
-Qwen3-0.6B 全参训练应先做短 smoke，具体命令和验收门禁见 `docs/qwen3_0_6b_full_finetune.md`。模板可依次运行 SFT-only 与 SFT+ALM：
-
-```bash
-export TRAIN_DATASET=/path/to/frozen/training_records.jsonl
-export OUTPUT_ROOT=/path/to/qwen3_0_6b_full_pair
-TRAIN_LIMIT=8 MAX_STEPS=2 bash examples/training/launch_qwen3_0_6b_full_pair.sh
-bash examples/training/monitor_training.sh "$OUTPUT_ROOT"
-```
-
-训练前建议先运行：
+Before training, audit the frozen data and the tokenizer/chat-template contract:
 
 ```bash
 python scripts/audit_frozen_training_dataset.py --help
 python scripts/audit_training_data_contract.py --help
 ```
 
-这些检查覆盖 trace 重建、Qwen tokenizer/chat template、EOS label、4096 长度、ALM chunk 和 benchmark overlap。Qwen3 审计必须显式传 `--chat-template-kwargs '{"enable_thinking": false}'`。训练不会在采集、审计或安装过程中自动开始。
+These audits cover trace reconstruction, EOS supervision, sequence length, ALM
+chunks, prompt/completion boundaries, and benchmark overlap. Qwen3 non-thinking
+runs must pass `--chat-template-kwargs '{"enable_thinking": false}'` consistently
+to audit and training code.
 
-## Top-20 与 ALM 的关系
+## Publish an audited dataset
 
-主路径 `actual_only` 只需要完整 completion、实际 token bytes 和实际 token logprob。它显著减小 raw JSON。旧的 top-20 + tail-bucket loss 仍保留在 `topk_distill` 中作实验基线，但不是默认训练目标。不要把 GOLD 的 ULD loss 直接替换进来；这里只复用了跨 tokenizer 的字节/跨度对齐思想。
+The release CLI builds deterministic gzip shards using an explicit field allowlist.
+It removes tests, verifier output, provider identifiers, local paths, and
+credential-like values while preserving the selected trace contract.
 
-## Benchmark 资产
-
-`proven_assets/` 包含两组未改动的、已实际跑通过的快照：
-
-- Qwen2.5-7B-Instruct alpha=10 训练与 base/checkpoint 对比启动器；
-- EvalPlus + LiveCodeBench 生成、隔离评分与结果汇总 harness。
-
-这些脚本冻结了当时的模型 revision、benchmark commit、SHA-256 和云端目录。迁移到新机器时应复制成新的 run 目录并显式替换路径，而不是修改历史快照。Benchmark 会执行不可信代码，只应在 Linux 的非 root 用户、资源限制和 seccomp/容器边界内运行。
-
-## Hugging Face 数据集发布
-
-`scripts/release_hf_dataset.py` 可从权威冻结 JSONL 构建确定性、默认私有的
-Hub 发布包。默认 `actual_only` 投影保留 ALM 所需的实际 token
-bytes/logprobs，并剥离 benchmark 测试、本机路径、provider 标识、疑似凭据及
-不用的 top-20 候选。显式 `--trace-profile strict_top20` 可另行发布严格基线
-所需的每位置 20 个候选 bytes/logprob 和可审计 tail-bucket mass；任何候选
-不足或字段无效的记录都会被拒绝。候选 token 字符串会一并保留，以兼容现有
-strict aligner；actual-token 字符串和 provider/raw 字段仍会剥离。
-上传默认只打印 dry-run，只有显式加入 `--execute` 才会写入 Hub。完整命令、
-2,041 条权威训练集身份和混合许可说明见
-[`docs/huggingface_dataset_release.md`](docs/huggingface_dataset_release.md)。
-
-## 目录
-
-```text
-src/deepseek_distill/   数据、API、持久化流水线、验证、审计、ALM 预处理
-src/topk_distill/       ALM 数学/Trainer 与严格 top-20 实验基线
-scripts/                可组合 CLI
-examples/               训练入口和 48-worker/训练操作模板
-configs/                无密钥示例配置
-proven_assets/          已跑通并完成机器信息脱敏的历史启动器模板
-tests/                  纯离线 fake-API/子进程测试
-docs/                   架构、计划、ADR、来源与历史技术说明
+```powershell
+python scripts/release_hf_dataset.py package --help
+python scripts/release_hf_dataset.py audit --help
+python scripts/release_hf_dataset.py upload --help
 ```
 
-详细架构见 `docs/architecture.md`，拆仓范围见 `docs/spec.md`，来源见 `ASSET_MANIFEST.md`。
+Upload is a dry run unless `--execute` is supplied, and execution also requires the
+exact human-reviewed manifest SHA256. See the complete procedure in
+[`docs/huggingface_dataset_release.md`](docs/huggingface_dataset_release.md).
 
-## 安全与边界
+## Validation status
 
-- API key 只从 `DEEPSEEK_API_KEY` 读取；示例和测试不含密钥。
-- pytest 不发起 live API 请求，也不下载模型或数据。
-- 生成代码绝不在收集主进程执行。
-- `data/`、`outputs/`、`runs/`、模型、checkpoint 和 `.env` 默认忽略。
-- 密码 SSH 部署器只从通用的 `REMOTE_SSH_PASSWORD` 读取；主机、端口、用户和远端路径必须显式传参。
-- 历史启动器从 `AUTODL_ROOT` 读取远端工作区根目录，不含实例专属连接信息。
-- 生产使用建议换成 SSH key 和严格 host-key 校验。
+| Surface | Status |
+| --- | --- |
+| 48-worker `actual_only` collection and verification | Proven in end-to-end runs. |
+| Qwen2.5 BF16 LoRA SFT/SFT+ALM launchers | Proven assets retained under [`proven_assets/`](proven_assets). |
+| EvalPlus and LiveCodeBench harness | Proven snapshots retained for reproducible reuse. |
+| Qwen3-0.6B full BF16 template | Data contract validated; GPU smoke is still required before treating it as proven. |
+| Latest 4,500-attempt acceptance snapshot | 1,656 clean ALM candidates; 1,619 after exact problem-text deduplication. |
+
+The Qwen3 contract snapshot supervised EOS on 1,656/1,656 examples and reported no
+ALM preprocessing error, zero-chunk example, boundary drop, or sequence over 4096.
+Details are recorded in
+[`docs/data_acceptance_qwen3_0_6b_20260811.md`](docs/data_acceptance_qwen3_0_6b_20260811.md).
+
+## Repository map
+
+```text
+src/deepseek_distill/   APIs, durable collection, verification, audits, ALM preprocessing
+src/topk_distill/       ALM math/trainers and the strict top-20 experimental baseline
+scripts/                Composable command-line workflows
+examples/               Training entrypoints and operational launch/monitor templates
+configs/                Secret-free collection and training examples
+proven_assets/          Sanitized snapshots of launchers that completed real runs
+tests/                  Fully offline fake-API and isolated-process tests
+docs/                   Architecture, ADRs, source plans, contracts, and release guides
+```
+
+Start with:
+
+- [Architecture](docs/architecture.md)
+- [ALM implementation](docs/alm_implementation.md)
+- [Standalone repository boundary](docs/decisions/006-standalone-repository-boundary.md)
+- [Collection expansion design](docs/multisource_expansion_20k_v2.md)
+- [Hugging Face release guide](docs/huggingface_dataset_release.md)
+- [Asset provenance](ASSET_MANIFEST.md)
+
+## Security boundaries
+
+- API credentials are read from environment variables only.
+- Automated tests never call a live API or download models/datasets.
+- Generated code never executes in the collection process itself.
+- Benchmark execution should run as a non-root Linux user with time, memory, and
+  process limits plus a container/seccomp boundary where practical.
+- `data/`, `outputs/`, `runs/`, model weights, checkpoints, logs, and `.env` files
+  are ignored by default.
+- Password-based deployment reads only `REMOTE_SSH_PASSWORD`; SSH keys and strict
+  host-key verification are recommended for production use.
+
+## License
+
+Toolkit code is released under the [MIT License](LICENSE). Collected datasets retain
+their own upstream licenses and provenance; a code license does not override source
+dataset terms.
